@@ -162,21 +162,77 @@ func (d *Detector) detectNode(path string) (string, string, float64, bool) {
 }
 
 func (d *Detector) detectNodeFramework(path string) string {
+	// Framework detection files (order matters - more specific first)
 	frameworks := []struct {
-		file     string
+		file      string
 		framework string
 	}{
+		// Meta-frameworks
 		{"next.config.js", "nextjs"},
+		{"next.config.ts", "nextjs"},
 		{"nuxt.config.ts", "nuxt"},
 		{"nuxt.config.js", "nuxt"},
+		{"svelte.config.js", "sveltekit"},
+		{"svelte.config.ts", "sveltekit"},
+		{"remix.config.js", "remix"},
+		{"redwood.toml", "redwoodjs"},
+		{"blitz.config.js", "blitzjs"},
+		{"keystone.js", "keystonejs"},
+		{"strapi.config.js", "strapi"},
+		
+		// Static Site Generators
 		{"gatsby-config.js", "gatsby"},
 		{"astro.config.mjs", "astro"},
+		{"astro.config.ts", "astro"},
+		{"11ty.config.js", "eleventy"},
+		{"eleventy.config.js", "eleventy"},
+		{"hugo.toml", "hugo"},
+		{"hugo.yaml", "hugo"},
+		{"docusaurus.config.js", "docusaurus"},
+		{"docusaurus.config.ts", "docusaurus"},
+		{"vitepress.config.js", "vitepress"},
+		{"docsify/_sidebar.md", "docsify"},
+		
+		// Build Tools
 		{"vite.config.ts", "vite"},
 		{"vite.config.js", "vite"},
+		{"vite.config.mjs", "vite"},
 		{"webpack.config.js", "webpack"},
+		{"webpack.config.ts", "webpack"},
+		{"rollup.config.js", "rollup"},
+		{"parcel.config.js", "parcel"},
+		{"tsconfig.json", "typescript"},
+		
+		// Full-stack Frameworks
 		{"nest-cli.json", "nestjs"},
-		{"remix.config.js", "remix"},
-		{"svelte.config.js", "sveltekit"},
+		{"angular.json", "angular"},
+		{"nx.json", "nx"},
+		{"turbo.json", "turborepo"},
+		{"lerna.json", "lerna"},
+		
+		// SPAs / Libraries
+		{"react-native.config.js", "react-native"},
+		{"expo-sdk-version", "expo"},
+		{"ionic.config.json", "ionic"},
+		{"quasar.conf.js", "quasar"},
+		
+		// Other
+		{"qwik-city-plan", "qwik"},
+		{"shopify/hydrogen.config.js", "shopify-hydrogen"},
+		{"solid.config.js", "solidjs"},
+		{"preact.config.js", "preact"},
+		{"lit.config.js", "lit"},
+		{"sapper.cnfg", "sapper"},
+		{"umirc.ts", "umi"},
+		{"umirc.js", "umi"},
+		{"genesisis.config.js", "genesis"},
+		{"modernizr-config.json", "modernizr"},
+		{"gridsome.config.js", "gridsome"},
+		{"front-end.config.js", "frontity"},
+		{"stencil.config.ts", "stencil"},
+		{"sapper.config.js", "sapper"},
+		{"prisma/schema.prisma", "prisma"},
+		{"trpc", "trpc"},
 	}
 
 	for _, f := range frameworks {
@@ -189,22 +245,144 @@ func (d *Detector) detectNodeFramework(path string) string {
 	pkgJSON := filepath.Join(path, "package.json")
 	if data, err := os.ReadFile(pkgJSON); err == nil {
 		var pkg struct {
-			Scripts map[string]string `json:"scripts"`
+			Scripts    map[string]string `json:"scripts"`
+			Dependencies map[string]string `json:"dependencies"`
+			DevDependencies map[string]string `json:"devDependencies"`
 		}
 		if json.Unmarshal(data, &pkg) == nil {
-			if _, ok := pkg.Scripts["next"]; ok {
-				return "nextjs"
-			}
-			if _, ok := pkg.Scripts["dev"]; ok {
-				if _, ok := pkg.Scripts["build"]; ok {
-					return "express" // default for custom setups
+			// Detect by dependencies
+			if deps := mergeMaps(pkg.Dependencies, pkg.DevDependencies); len(deps) > 0 {
+				if _, ok := deps["next"]; ok {
+					return "nextjs"
 				}
-				return "vite" // likely vite
+				if _, ok := deps["@nuxt/core"]; ok || _, ok := deps["nuxt"]; ok {
+					return "nuxt"
+				}
+				if _, ok := deps["@sveltejs/kit"]; ok {
+					return "sveltekit"
+				}
+				if _, ok := deps["remix"]; ok {
+					return "remix"
+				}
+				if _, ok := deps["@nestjs/core"]; ok {
+					return "nestjs"
+				}
+				if _, ok := deps["angular"]; ok || _, ok := deps["@angular/core"]; ok {
+					return "angular"
+				}
+				if _, ok := deps["react"]; ok {
+					return "react"
+				}
+				if _, ok := deps["vue"]; ok {
+					return "vue"
+				}
+				if _, ok := deps["@redwoodjs/core"]; ok {
+					return "redwoodjs"
+				}
+				if _, ok := deps["@shopify/hydrogen"]; ok {
+					return "shopify-hydrogen"
+				}
+				if _, ok := deps["@builder.io/qwik"]; ok || _, ok := deps["@builder.io/qwik-city"]; ok {
+					return "qwik"
+				}
+				if _, ok := deps["solid-js"]; ok {
+					return "solidjs"
+				}
+				if _, ok := deps["preact"]; ok {
+					return "preact"
+				}
+				if _, ok := deps["svelte"]; ok {
+					return "svelte"
+				}
+				if _, ok := deps["expo"]; ok {
+					return "expo"
+				}
+				if _, ok := deps["@ionic/react"]; ok {
+					return "ionic"
+				}
+				if _, ok := deps["@quasar/extras"]; ok {
+					return "quasar"
+				}
+			}
+			
+			// Detect by scripts
+			scripts := pkg.Scripts
+			if scripts == nil {
+				scripts = make(map[string]string)
+			}
+			
+			scriptFramework := detectByScript(scripts)
+			if scriptFramework != "" {
+				return scriptFramework
 			}
 		}
 	}
 
 	return "node" // generic node
+}
+
+func mergeMaps(a, b map[string]string) map[string]string {
+	result := make(map[string]string)
+	for k, v := range a {
+		result[k] = v
+	}
+	for k, v := range b {
+		result[k] = v
+	}
+	return result
+}
+
+func detectByScript(scripts map[string]string) string {
+	scriptToFramework := map[string]string{
+		"next":          "nextjs",
+		"nuxt:dev":      "nuxt",
+		"nuxt:build":     "nuxt",
+		"gatsby develop": "gatsby",
+		"gatsby build":   "gatsby",
+		"astro dev":     "astro",
+		"astro build":   "astro",
+		"svelte-kit":     "sveltekit",
+		"remix":         "remix",
+		"nest":          "nestjs",
+		"build:watch":    "angular",
+		"nx":            "nx",
+		"build:ssr":     "angular-universal",
+		"prisma:generate": "prisma",
+		"trpc":          "trpc",
+	}
+	
+	for script := range scripts {
+		if fw, ok := scriptToFramework[script]; ok {
+			return fw
+		}
+	}
+	
+	// Check for common patterns
+	for script := range scripts {
+		if strings.Contains(script, "next") {
+			return "nextjs"
+		}
+		if strings.Contains(script, "nuxt") {
+			return "nuxt"
+		}
+		if strings.Contains(script, "vite") {
+			return "vite"
+		}
+		if strings.Contains(script, "gatsby") {
+			return "gatsby"
+		}
+		if strings.Contains(script, "astro") {
+			return "astro"
+		}
+		if strings.Contains(script, "nest") {
+			return "nestjs"
+		}
+		if strings.Contains(script, "angular") {
+			return "angular"
+		}
+	}
+	
+	return ""
 }
 
 func (d *Detector) detectPackageManager(path string) string {

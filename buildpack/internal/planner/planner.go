@@ -169,32 +169,412 @@ func (p *Planner) planNode(detection *analyzer.DetectionResult) *BuildPlan {
 		pm = "npm"
 	}
 
+	fwConfig := getFrameworkConfig(detection.Framework)
+
 	plan := &BuildPlan{
-		Output:        p.getNodeOutput(detection),
+		Output:        fwConfig.Output,
 		BuildPack:    "launchpack",
-		StaticDeploy: p.isStaticFramework(detection.Framework),
+		StaticDeploy: fwConfig.IsStatic,
 		Cache: &CacheConfig{
 			Mounts: p.getNodeCacheMounts(pm),
 		},
 		Strategy: "buildpack_node",
-		Environment: map[string]string{
-			"NODE_ENV": "production",
-		},
-		Volumes: p.detectVolumes(detection),
+		Environment: fwConfig.EnvVars,
+		Ports:     fwConfig.Ports,
+		Volumes:   p.detectVolumes(detection),
 		Metadata: &PlanMetadata{
-			EstimatedBuildTimeMs: 30000,
+			EstimatedBuildTimeMs: fwConfig.BuildTimeMs,
 			CacheHitRate:        0.85,
-			ImageSizeEstimateMB: 15,
-			OptimizationApplied: []string{"multi-stage", "layer-caching", "dependency-install-cache"},
+			ImageSizeEstimateMB: fwConfig.ImageSizeMB,
+			OptimizationApplied: fwConfig.Optimizations,
 		},
 	}
 
 	plan.InstallCmd = p.getNodeInstallCmd(pm)
-	plan.BuildCmd = p.getNodeBuildCmd(detection)
-	plan.StartCmd = p.getNodeStartCmd(detection)
-	plan.Stages = p.generateNodeStages(detection, pm)
+	plan.BuildCmd = fwConfig.BuildCmd
+	plan.StartCmd = fwConfig.StartCmd
+	plan.Stages = p.generateNodeStages(detection, pm, fwConfig)
 
 	return plan
+}
+
+// FrameworkConfig holds all configuration for a specific framework
+type FrameworkConfig struct {
+	Name            string
+	Output         string
+	BuildCmd       string
+	StartCmd       string
+	RuntimeImage   string
+	Ports          []int
+	IsStatic      bool
+	IsSPA         bool
+	ImageSizeMB   int
+	BuildTimeMs   int64
+	Optimizations []string
+	EnvVars       map[string]string
+}
+
+// getFrameworkConfig returns configuration for a specific framework
+func getFrameworkConfig(framework string) FrameworkConfig {
+	configs := map[string]FrameworkConfig{
+		// Meta-frameworks
+		"nextjs": {
+			Name: "Next.js", Output: ".next", BuildCmd: "next build",
+			StartCmd: "next start", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 20, BuildTimeMs: 60000,
+			Optimizations: []string{"multi-stage", "layer-caching", "standalone-output"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"nuxt": {
+			Name: "Nuxt.js", Output: ".output", BuildCmd: "nuxt build",
+			StartCmd: "node .output/server/index.mjs", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 18, BuildTimeMs: 55000,
+			Optimizations: []string{"multi-stage", "layer-caching", "server-output"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"sveltekit": {
+			Name: "SvelteKit", Output: "build", BuildCmd: "vite build",
+			StartCmd: "node build/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 12, BuildTimeMs: 45000,
+			Optimizations: []string{"multi-stage", "layer-caching", "prerender"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"remix": {
+			Name: "Remix", Output: "build", BuildCmd: "remix build",
+			StartCmd: "node build/server/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 15, BuildTimeMs: 50000,
+			Optimizations: []string{"multi-stage", "layer-caching"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"redwoodjs": {
+			Name: "RedwoodJS", Output: "api/dist", BuildCmd: "rw build",
+			StartCmd: "node api/dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{8911}, ImageSizeMB: 25, BuildTimeMs: 90000,
+			Optimizations: []string{"multi-stage", "api-web-split"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"blitzjs": {
+			Name: "Blitz.js", Output: ".next", BuildCmd: "blitz build",
+			StartCmd: "next start", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 22, BuildTimeMs: 70000,
+			Optimizations: []string{"multi-stage", "layer-caching"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"keystonejs": {
+			Name: "Keystone.js", Output: "dist", BuildCmd: "keystone build",
+			StartCmd: "node dist/keystone.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{8000}, ImageSizeMB: 18, BuildTimeMs: 60000,
+			Optimizations: []string{"multi-stage"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"strapi": {
+			Name: "Strapi", Output: "dist", BuildCmd: "strapi build",
+			StartCmd: "node dist/bin/main.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{1337}, ImageSizeMB: 25, BuildTimeMs: 80000,
+			Optimizations: []string{"multi-stage"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+
+		// Static Site Generators
+		"gatsby": {
+			Name: "Gatsby", Output: "public", BuildCmd: "gatsby build",
+			StartCmd: "", RuntimeImage: "nginx:alpine", IsStatic: true,
+			Ports: []int{80, 443}, ImageSizeMB: 8, BuildTimeMs: 120000,
+			Optimizations: []string{"static-output", "nginx-minimal"},
+			EnvVars: map[string]string{},
+		},
+		"astro": {
+			Name: "Astro", Output: "dist", BuildCmd: "astro build",
+			StartCmd: "", RuntimeImage: "nginx:alpine", IsStatic: true,
+			Ports: []int{80, 443}, ImageSizeMB: 5, BuildTimeMs: 30000,
+			Optimizations: []string{"static-output", "nginx-minimal", "zero-js"},
+			EnvVars: map[string]string{},
+		},
+		"eleventy": {
+			Name: "Eleventy", Output: "_site", BuildCmd: "eleventy",
+			StartCmd: "", RuntimeImage: "nginx:alpine", IsStatic: true,
+			Ports: []int{80, 443}, ImageSizeMB: 4, BuildTimeMs: 15000,
+			Optimizations: []string{"static-output", "minimal"},
+			EnvVars: map[string]string{},
+		},
+		"hugo": {
+			Name: "Hugo", Output: "public", BuildCmd: "hugo",
+			StartCmd: "", RuntimeImage: "nginx:alpine", IsStatic: true,
+			Ports: []int{80, 443}, ImageSizeMB: 3, BuildTimeMs: 5000,
+			Optimizations: []string{"static-output", "golang-binary"},
+			EnvVars: map[string]string{},
+		},
+		"docusaurus": {
+			Name: "Docusaurus", Output: "build", BuildCmd: "docusaurus build",
+			StartCmd: "", RuntimeImage: "nginx:alpine", IsStatic: true,
+			Ports: []int{3000}, ImageSizeMB: 12, BuildTimeMs: 60000,
+			Optimizations: []string{"static-output", "react-static"},
+			EnvVars: map[string]string{},
+		},
+		"vitepress": {
+			Name: "VitePress", Output: ".vitepress/dist", BuildCmd: "vitepress build",
+			StartCmd: "", RuntimeImage: "nginx:alpine", IsStatic: true,
+			Ports: []int{80, 443}, ImageSizeMB: 5, BuildTimeMs: 20000,
+			Optimizations: []string{"static-output", "vue-static"},
+			EnvVars: map[string]string{},
+		},
+		"docsify": {
+			Name: "Docsify", Output: "docs", BuildCmd: "",
+			StartCmd: "docsify serve docs", RuntimeImage: "node:22-alpine", IsStatic: true,
+			Ports: []int{3000}, ImageSizeMB: 6, BuildTimeMs: 5000,
+			Optimizations: []string{"static-output"},
+			EnvVars: map[string]string{},
+		},
+
+		// Build Tools
+		"vite": {
+			Name: "Vite", Output: "dist", BuildCmd: "vite build",
+			StartCmd: "vite preview", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000, 5173}, ImageSizeMB: 10, BuildTimeMs: 30000,
+			Optimizations: []string{"multi-stage", "esbuild"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"webpack": {
+			Name: "Webpack", Output: "dist", BuildCmd: "webpack --mode production",
+			StartCmd: "node dist/main.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{8080}, ImageSizeMB: 15, BuildTimeMs: 90000,
+			Optimizations: []string{"multi-stage", "tree-shaking"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"rollup": {
+			Name: "Rollup", Output: "dist", BuildCmd: "rollup -c",
+			StartCmd: "node dist/bundle.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 8, BuildTimeMs: 40000,
+			Optimizations: []string{"multi-stage", "tree-shaking"},
+			EnvVars: map[string]string{},
+		},
+		"parcel": {
+			Name: "Parcel", Output: "dist", BuildCmd: "parcel build",
+			StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 12, BuildTimeMs: 60000,
+			Optimizations: []string{"multi-stage"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"typescript": {
+			Name: "TypeScript", Output: "dist", BuildCmd: "tsc",
+			StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 8, BuildTimeMs: 30000,
+			Optimizations: []string{"multi-stage", "type-check"},
+			EnvVars: map[string]string{},
+		},
+
+		// Full-stack Frameworks
+		"nestjs": {
+			Name: "NestJS", Output: "dist", BuildCmd: "nest build",
+			StartCmd: "node dist/main.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 15, BuildTimeMs: 50000,
+			Optimizations: []string{"multi-stage", "reflect-metadata"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"angular": {
+			Name: "Angular", Output: "dist", BuildCmd: "ng build",
+			StartCmd: "node dist/server/server.mjs", RuntimeImage: "node:22-alpine",
+			Ports: []int{4000}, ImageSizeMB: 20, BuildTimeMs: 120000,
+			Optimizations: []string{"multi-stage", "ivy-compiler"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"nx": {
+			Name: "NX", Output: "dist/apps", BuildCmd: "nx build",
+			StartCmd: "node dist/apps/*/server/main.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 30, BuildTimeMs: 180000,
+			Optimizations: []string{"multi-stage", "affected-builds"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"turborepo": {
+			Name: "Turborepo", Output: "dist", BuildCmd: "turbo build",
+			StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 25, BuildTimeMs: 150000,
+			Optimizations: []string{"multi-stage", "remote-cache"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"lerna": {
+			Name: "Lerna", Output: "packages/*/dist", BuildCmd: "lerna run build",
+			StartCmd: "node packages/*/dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 30, BuildTimeMs: 200000,
+			Optimizations: []string{"multi-stage", "monorepo"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+
+		// SPAs
+		"react": {
+			Name: "React", Output: "build", BuildCmd: "react-scripts build",
+			StartCmd: "serve -s build -l 3000", RuntimeImage: "node:22-alpine", IsSPA: true,
+			Ports: []int{3000}, ImageSizeMB: 12, BuildTimeMs: 120000,
+			Optimizations: []string{"static-output", "code-splitting"},
+			EnvVars: map[string]string{},
+		},
+		"vue": {
+			Name: "Vue.js", Output: "dist", BuildCmd: "vue-cli-service build",
+			StartCmd: "serve -s dist -l 80", RuntimeImage: "nginx:alpine", IsSPA: true,
+			Ports: []int{80}, ImageSizeMB: 8, BuildTimeMs: 60000,
+			Optimizations: []string{"static-output", "code-splitting"},
+			EnvVars: map[string]string{},
+		},
+		"svelte": {
+			Name: "Svelte", Output: "public", BuildCmd: "rollup -c",
+			StartCmd: "sirv public --no-clear --port 5000", RuntimeImage: "node:22-alpine", IsSPA: true,
+			Ports: []int{5000}, ImageSizeMB: 5, BuildTimeMs: 30000,
+			Optimizations: []string{"static-output"},
+			EnvVars: map[string]string{},
+		},
+		"solidjs": {
+			Name: "SolidJS", Output: "dist", BuildCmd: "vite build",
+			StartCmd: "vite preview", RuntimeImage: "node:22-alpine", IsSPA: true,
+			Ports: []int{3000}, ImageSizeMB: 6, BuildTimeMs: 25000,
+			Optimizations: []string{"static-output", "fine-grained"},
+			EnvVars: map[string]string{},
+		},
+		"preact": {
+			Name: "Preact", Output: "build", BuildCmd: "preact build",
+			StartCmd: "serve -s build -l 3000", RuntimeImage: "node:22-alpine", IsSPA: true,
+			Ports: []int{3000}, ImageSizeMB: 5, BuildTimeMs: 40000,
+			Optimizations: []string{"static-output", "tiny-bundle"},
+			EnvVars: map[string]string{},
+		},
+		"lit": {
+			Name: "Lit", Output: "dist", BuildCmd: "npm run build",
+			StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{8000}, ImageSizeMB: 4, BuildTimeMs: 30000,
+			Optimizations: []string{"web-components"},
+			EnvVars: map[string]string{},
+		},
+		"qwik": {
+			Name: "Qwik", Output: "dist", BuildCmd: "qwik build",
+			StartCmd: "node server/entry.express", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 10, BuildTimeMs: 40000,
+			Optimizations: []string{"resumability", "lazy-loading"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"shopify-hydrogen": {
+			Name: "Shopify Hydrogen", Output: "dist", BuildCmd: "hydrogen build",
+			StartCmd: "npm run start", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 20, BuildTimeMs: 90000,
+			Optimizations: []string{"oxygen", "streaming"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+
+		// Mobile / Desktop
+		"react-native": {
+			Name: "React Native", Output: "android/app/build", BuildCmd: "react-native build-android",
+			StartCmd: "", RuntimeImage: "ubuntu:22.04",
+			Ports: []int{8081}, ImageSizeMB: 50, BuildTimeMs: 300000,
+			Optimizations: []string{"android-build"},
+			EnvVars: map[string]string{"ANDROID_HOME": "/opt/android-sdk"},
+		},
+		"expo": {
+			Name: "Expo", Output: "dist", BuildCmd: "expo export",
+			StartCmd: "npx serve dist", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 15, BuildTimeMs: 120000,
+			Optimizations: []string{"expo-export"},
+			EnvVars: map[string]string{},
+		},
+		"ionic": {
+			Name: "Ionic", Output: "www", BuildCmd: "ionic build",
+			StartCmd: "ionic serve", RuntimeImage: "node:22-alpine", IsSPA: true,
+			Ports: []int{8100}, ImageSizeMB: 10, BuildTimeMs: 90000,
+			Optimizations: []string{"capacitor", "pwa"},
+			EnvVars: map[string]string{},
+		},
+		"quasar": {
+			Name: "Quasar", Output: "dist/spa", BuildCmd: "quasar build",
+			StartCmd: "quasar serve dist/spa", RuntimeImage: "node:22-alpine", IsSPA: true,
+			Ports: []int{80}, ImageSizeMB: 12, BuildTimeMs: 120000,
+			Optimizations: []string{"spa-mode"},
+			EnvVars: map[string]string{},
+		},
+		"stencil": {
+			Name: "Stencil", Output: "dist", BuildCmd: "stencil build",
+			StartCmd: "http-server dist -p 3333", RuntimeImage: "node:22-alpine",
+			Ports: []int{3333}, ImageSizeMB: 8, BuildTimeMs: 60000,
+			Optimizations: []string{"web-components", "lazy-loading"},
+			EnvVars: map[string]string{},
+		},
+
+		// Other
+		"prisma": {
+			Name: "Prisma", Output: "dist", BuildCmd: "prisma generate",
+			StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3300}, ImageSizeMB: 8, BuildTimeMs: 30000,
+			Optimizations: []string{"code-generation"},
+			EnvVars: map[string]string{},
+		},
+		"trpc": {
+			Name: "tRPC", Output: "dist", BuildCmd: "tsc",
+			StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 10, BuildTimeMs: 45000,
+			Optimizations: []string{"type-safe"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"gridsome": {
+			Name: "Gridsome", Output: "dist", BuildCmd: "gridsome build",
+			StartCmd: "", RuntimeImage: "nginx:alpine", IsStatic: true,
+			Ports: []int{80}, ImageSizeMB: 10, BuildTimeMs: 90000,
+			Optimizations: []string{"graphql-static"},
+			EnvVars: map[string]string{},
+		},
+		"frontity": {
+			Name: "Frontity", Output: "build", BuildCmd: "frontity build",
+			StartCmd: "frontity serve", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 12, BuildTimeMs: 80000,
+			Optimizations: []string{"serverless"},
+			EnvVars: map[string]string{},
+		},
+		"sapper": {
+			Name: "Sapper", Output: "__sapper__/export", BuildCmd: "npm run build",
+			StartCmd: "node __sapper__/build/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 15, BuildTimeMs: 70000,
+			Optimizations: []string{"svelte-fullstack"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"umi": {
+			Name: "UmiJS", Output: "dist", BuildCmd: "umi build",
+			StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{8000}, ImageSizeMB: 18, BuildTimeMs: 90000,
+			Optimizations: []string{"plugin-system"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"genesis": {
+			Name: "Genesis", Output: "dist", BuildCmd: "genesis build",
+			StartCmd: "genesis start", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 12, BuildTimeMs: 60000,
+			Optimizations: []string{"ultra-fast"},
+			EnvVars: map[string]string{"NODE_ENV": "production"},
+		},
+		"modernizr": {
+			Name: "Modernizr", Output: "dist", BuildCmd: "modernizr",
+			StartCmd: "serve dist -p 3000", RuntimeImage: "node:22-alpine", IsStatic: true,
+			Ports: []int{3000}, ImageSizeMB: 3, BuildTimeMs: 15000,
+			Optimizations: []string{"feature-detection"},
+			EnvVars: map[string]string{},
+		},
+
+		// Generic Node
+		"node": {
+			Name: "Node.js", Output: ".", BuildCmd: "",
+			StartCmd: "node index.js", RuntimeImage: "node:22-alpine",
+			Ports: []int{3000}, ImageSizeMB: 8, BuildTimeMs: 10000,
+			Optimizations: []string{},
+			EnvVars: map[string]string{},
+		},
+	}
+
+	if cfg, ok := configs[framework]; ok {
+		return cfg
+	}
+
+	// Default fallback
+	return FrameworkConfig{
+		Name: framework, Output: "dist", BuildCmd: "npm run build",
+		StartCmd: "node dist/index.js", RuntimeImage: "node:22-alpine",
+		Ports: []int{3000}, ImageSizeMB: 10, BuildTimeMs: 45000,
+		Optimizations: []string{"generic"},
+		EnvVars: map[string]string{"NODE_ENV": "production"},
+	}
 }
 
 // detectVolumes detects common persistent volume requirements
@@ -202,19 +582,6 @@ func (p *Planner) detectVolumes(detection *analyzer.DetectionResult) []Volume {
 	var volumes []Volume
 
 	// Common storage directories that should be persistent
-	persistentDirs := []string{
-		"data",
-		"storage",
-		"uploads",
-		"files",
-		"cache",
-		"logs",
-		"tmp",
-		"db",
-		"database",
-	}
-
-	// Check for Laravel-style storage
 	if p.hasFile("storage/") {
 		volumes = append(volumes, Volume{
 			Type:   "persistent",
@@ -223,7 +590,6 @@ func (p *Planner) detectVolumes(detection *analyzer.DetectionResult) []Volume {
 		})
 	}
 
-	// Check for database directories
 	if p.hasFile("data/") || p.hasFile("db/") {
 		volumes = append(volumes, Volume{
 			Type:   "persistent",
@@ -232,7 +598,6 @@ func (p *Planner) detectVolumes(detection *analyzer.DetectionResult) []Volume {
 		})
 	}
 
-	// Check for upload directories
 	if p.hasFile("uploads/") {
 		volumes = append(volumes, Volume{
 			Type:   "persistent",
@@ -241,27 +606,15 @@ func (p *Planner) detectVolumes(detection *analyzer.DetectionResult) []Volume {
 		})
 	}
 
-	// Node.js specific: check for volume requirements in metadata
-	if detection.Framework == "nextjs" {
-		// Next.js may need persistent storage for .next/cache
-		volumes = append(volumes, Volume{
-			Type:   "cache",
-			Name:   "next-cache",
-			Target: "/app/.next/cache",
-		})
-	}
-
-	// Python specific volumes
-	if detection.Language == "python" {
-		// Check for SQLite or other file-based databases
-		if p.hasFile(".env") {
-			volumes = append(volumes, Volume{
-				Type:   "persistent",
-				Name:   "env",
-				Target: "/app/.env",
-				ReadOnly: true,
-			})
-		}
+	// Framework-specific volumes
+	switch detection.Framework {
+	case "nextjs":
+		volumes = append(volumes, Volume{Type: "cache", Name: "next-cache", Target: "/app/.next/cache"})
+	case "strapi", "keystonejs", "blitzjs":
+		volumes = append(volumes, Volume{Type: "persistent", Name: "database", Target: "/app/data"})
+		volumes = append(volumes, Volume{Type: "persistent", Name: "uploads", Target: "/app/public/uploads"})
+	case "redwoodjs":
+		volumes = append(volumes, Volume{Type: "persistent", Name: "db", Target: "/app/api/db"})
 	}
 
 	return volumes
