@@ -17,6 +17,7 @@ type BuildPlan struct {
 	BuildArgs     []BuildArg             `json:"buildArgs,omitempty"`
 	Environment   map[string]string      `json:"environment,omitempty"`
 	Ports         []int                 `json:"ports,omitempty"`
+	Volumes       []Volume              `json:"volumes,omitempty"`
 	Cache         *CacheConfig          `json:"cache,omitempty"`
 	Strategy      string                 `json:"strategy"`
 	Metadata      *PlanMetadata          `json:"metadata,omitempty"`
@@ -25,6 +26,24 @@ type BuildPlan struct {
 	BuildCmd      string                 `json:"buildCommand,omitempty"`
 	StartCmd      string                 `json:"startCommand,omitempty"`
 	StaticDeploy  bool                   `json:"static,omitempty"`
+}
+
+// Volume represents a persistent volume mount
+type Volume struct {
+	Type        string `json:"type"`        // persistent, cache, tmp, bind
+	Name        string `json:"name"`        // volume name
+	Source      string `json:"source"`      // host path (for bind)
+	Target      string `json:"target"`      // container path
+	ReadOnly   bool   `json:"readOnly"`   // mount as read-only
+	Share       string `json:"share"`      // sharing mode: shared, private
+}
+
+// DockerVolume represents volume configuration for docker-compose output
+type DockerVolume struct {
+	Name       string            `json:"name"`
+	Driver     string            `json:"driver,omitempty"`
+	External   bool              `json:"external,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 // RuntimeConfig defines runtime settings
@@ -161,6 +180,7 @@ func (p *Planner) planNode(detection *analyzer.DetectionResult) *BuildPlan {
 		Environment: map[string]string{
 			"NODE_ENV": "production",
 		},
+		Volumes: p.detectVolumes(detection),
 		Metadata: &PlanMetadata{
 			EstimatedBuildTimeMs: 30000,
 			CacheHitRate:        0.85,
@@ -175,6 +195,76 @@ func (p *Planner) planNode(detection *analyzer.DetectionResult) *BuildPlan {
 	plan.Stages = p.generateNodeStages(detection, pm)
 
 	return plan
+}
+
+// detectVolumes detects common persistent volume requirements
+func (p *Planner) detectVolumes(detection *analyzer.DetectionResult) []Volume {
+	var volumes []Volume
+
+	// Common storage directories that should be persistent
+	persistentDirs := []string{
+		"data",
+		"storage",
+		"uploads",
+		"files",
+		"cache",
+		"logs",
+		"tmp",
+		"db",
+		"database",
+	}
+
+	// Check for Laravel-style storage
+	if p.hasFile("storage/") {
+		volumes = append(volumes, Volume{
+			Type:   "persistent",
+			Name:   "storage",
+			Target: "/app/storage",
+		})
+	}
+
+	// Check for database directories
+	if p.hasFile("data/") || p.hasFile("db/") {
+		volumes = append(volumes, Volume{
+			Type:   "persistent",
+			Name:   "data",
+			Target: "/app/data",
+		})
+	}
+
+	// Check for upload directories
+	if p.hasFile("uploads/") {
+		volumes = append(volumes, Volume{
+			Type:   "persistent",
+			Name:   "uploads",
+			Target: "/app/uploads",
+		})
+	}
+
+	// Node.js specific: check for volume requirements in metadata
+	if detection.Framework == "nextjs" {
+		// Next.js may need persistent storage for .next/cache
+		volumes = append(volumes, Volume{
+			Type:   "cache",
+			Name:   "next-cache",
+			Target: "/app/.next/cache",
+		})
+	}
+
+	// Python specific volumes
+	if detection.Language == "python" {
+		// Check for SQLite or other file-based databases
+		if p.hasFile(".env") {
+			volumes = append(volumes, Volume{
+				Type:   "persistent",
+				Name:   "env",
+				Target: "/app/.env",
+				ReadOnly: true,
+			})
+		}
+	}
+
+	return volumes
 }
 
 func (p *Planner) getNodeOutput(detection *analyzer.DetectionResult) string {
