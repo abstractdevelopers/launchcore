@@ -2,59 +2,88 @@ package planner
 
 import (
 	"os"
+	"strings"
 
 	"github.com/abstractdevelopers/launchcore/buildpack/internal/analyzer"
 )
 
 // BuildPlan represents the complete build execution plan
 type BuildPlan struct {
-	Stages      []Stage        `json:"stages"`
-	Output      string         `json:"output"`
-	Runtime     string         `json:"runtime"`
-	Entrypoint  []string       `json:"entrypoint"`
-	EnvVars     []string       `json:"envVars,omitempty"`
-	CacheConfig CacheConfig    `json:"cacheConfig"`
-	Strategy    string         `json:"strategy"`
-	Metadata    PlanMetadata   `json:"metadata"`
+	Name          string                 `json:"name"`
+	Version       string                 `json:"version"`
+	Stages        []Stage               `json:"stages"`
+	Output        string                 `json:"output"`
+	Runtime       *RuntimeConfig         `json:"runtime"`
+	BuildArgs     []BuildArg             `json:"buildArgs,omitempty"`
+	Environment   map[string]string      `json:"environment,omitempty"`
+	Ports         []int                 `json:"ports,omitempty"`
+	Cache         *CacheConfig          `json:"cache,omitempty"`
+	Strategy      string                 `json:"strategy"`
+	Metadata      *PlanMetadata          `json:"metadata,omitempty"`
+	BuildPack     string                 `json:"buildpack"`
+	InstallCmd    string                 `json:"installCommand,omitempty"`
+	BuildCmd      string                 `json:"buildCommand,omitempty"`
+	StartCmd      string                 `json:"startCommand,omitempty"`
+	StaticDeploy  bool                   `json:"static,omitempty"`
+}
+
+// RuntimeConfig defines runtime settings
+type RuntimeConfig struct {
+	Image    string            `json:"image"`
+	User    string            `json:"user,omitempty"`
+	Workdir string            `json:"workdir,omitempty"`
+	EnvVars map[string]string `json:"env,omitempty"`
+}
+
+// BuildArg represents a Docker build argument
+type BuildArg struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// CacheConfig defines caching strategy
+type CacheConfig struct {
+	Mounts []CacheMount `json:"mounts"`
+	Keys   []string     `json:"keys,omitempty"`
+}
+
+// CacheMount represents a persistent cache mount
+type CacheMount struct {
+	Type    string `json:"type"`   // cache, bind
+	Source  string `json:"source,omitempty"`
+	Target  string `json:"target"`
+	Sharing string `json:"sharing,omitempty"`
+	ID      string `json:"id,omitempty"`
 }
 
 // Stage represents a single build stage
 type Stage struct {
 	Name       string   `json:"name"`
-	Image      string   `json:"image"`
+	Image      string   `json:"image,omitempty"`
 	Steps      []Step   `json:"steps"`
 	Cache      []string `json:"cache,omitempty"`
 	Needs      []string `json:"needs,omitempty"`
+	Entrypoint []string `json:"entrypoint,omitempty"`
+	Command    string   `json:"command,omitempty"`
 }
 
 // Step represents a single build step
 type Step struct {
-	Type    string   `json:"type"` // copy, run, workdir, env, etc.
-	Src     string   `json:"src,omitempty"`
-	Dest    string   `json:"dest,omitempty"`
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
-}
-
-// CacheConfig defines caching strategy
-type CacheConfig struct {
-	Keys   map[string]string `json:"keys"`   // cache key -> mount path
-	Mounts []CacheMount      `json:"mounts"`
-}
-
-// CacheMount represents a persistent cache mount
-type CacheMount struct {
-	Type   string   `json:"type"` // volume, bind
-	Source string   `json:"source"`
-	Target string   `json:"target"`
+	Type    string       `json:"type"`
+	Src     string       `json:"src,omitempty"`
+	Dest    string       `json:"dest,omitempty"`
+	Command string       `json:"command,omitempty"`
+	Args    []string     `json:"args,omitempty"`
+	Mount   *CacheMount  `json:"mount,omitempty"`
 }
 
 // PlanMetadata contains additional plan information
 type PlanMetadata struct {
-	EstimatedBuildTimeMs int64   `json:"estimatedBuildTimeMs"`
-	CacheHitRate         float64 `json:"cacheHitRate"`
-	ImageSizeEstimateMB  int     `json:"imageSizeEstimateMB"`
-	OptimizationApplied  []string `json:"optimizationApplied"`
+	EstimatedBuildTimeMs int64    `json:"estimatedBuildTimeMs"`
+	CacheHitRate        float64  `json:"cacheHitRate"`
+	ImageSizeEstimateMB int      `json:"imageSizeEstimateMB"`
+	OptimizationApplied []string `json:"optimizationApplied"`
+	DetectedAt          int64    `json:"detectedAt"`
 }
 
 // Planner generates optimal build plans
@@ -68,9 +97,11 @@ func NewPlanner() *Planner {
 // GeneratePlan creates an optimized build plan from detection results
 func (p *Planner) GeneratePlan(detection *analyzer.DetectionResult) *BuildPlan {
 	plan := &BuildPlan{
+		Version:  "1.0",
 		Strategy: p.selectStrategy(detection),
-		Metadata: PlanMetadata{
+		Metadata: &PlanMetadata{
 			OptimizationApplied: []string{},
+			DetectedAt:         detection.DetectedAt.Unix(),
 		},
 	}
 
@@ -91,6 +122,16 @@ func (p *Planner) GeneratePlan(detection *analyzer.DetectionResult) *BuildPlan {
 		plan = p.planGeneric(detection)
 	}
 
+	plan.Runtime = &RuntimeConfig{
+		Image:    plan.Runtime.Image,
+		Workdir:  "/app",
+		EnvVars:  plan.Environment,
+	}
+
+	if detection.Port > 0 {
+		plan.Ports = []int{detection.Port}
+	}
+
 	return plan
 }
 
@@ -101,6 +142,8 @@ func (p *Planner) selectStrategy(detection *analyzer.DetectionResult) string {
 	return "buildpack_" + detection.Language
 }
 
+// ============ NODE.JS ============
+
 func (p *Planner) planNode(detection *analyzer.DetectionResult) *BuildPlan {
 	pm := detection.PackageManager
 	if pm == "" {
@@ -108,114 +151,182 @@ func (p *Planner) planNode(detection *analyzer.DetectionResult) *BuildPlan {
 	}
 
 	plan := &BuildPlan{
-		Output:  "./dist",
-		Runtime: detection.Runtime,
-		CacheConfig: CacheConfig{
-			Keys: map[string]string{
-				pm: "/root/.npm",
-			},
-			Mounts: []CacheMount{
-				{Type: "cache", Target: "/root/.npm"},
-			},
+		Output:        p.getNodeOutput(detection),
+		BuildPack:    "launchpack",
+		StaticDeploy: p.isStaticFramework(detection.Framework),
+		Cache: &CacheConfig{
+			Mounts: p.getNodeCacheMounts(pm),
 		},
 		Strategy: "buildpack_node",
-		Metadata: PlanMetadata{
+		Environment: map[string]string{
+			"NODE_ENV": "production",
+		},
+		Metadata: &PlanMetadata{
 			EstimatedBuildTimeMs: 30000,
+			CacheHitRate:        0.85,
+			ImageSizeEstimateMB: 15,
 			OptimizationApplied: []string{"multi-stage", "layer-caching", "dependency-install-cache"},
 		},
 	}
 
-	// Multi-stage plan: deps -> build -> runtime
-	plan.Stages = []Stage{
-		{
-			Name:  "deps",
-			Image: detection.Runtime,
-			Steps: p.getNodeDepsSteps(pm),
-			Cache: []string{"/root/.npm"},
-		},
-	}
-
-	// Add build stage if needed
-	if detection.Framework != "" && !p.isStaticFramework(detection.Framework) {
-		buildStep := p.getNodeBuildStep(detection)
-		if buildStep != nil {
-			plan.Stages = append(plan.Stages, Stage{
-				Name:  "build",
-				Image: detection.Runtime,
-				Steps: []Step{*buildStep},
-				Needs: []string{"deps"},
-			})
-		}
-	}
-
-	// Runtime stage (final)
-	plan.Stages = append(plan.Stages, Stage{
-		Name:       "runtime",
-		Image:      p.getNodeRuntimeImage(detection),
-		Steps:      p.getNodeRuntimeSteps(detection),
-		Entrypoint: p.getNodeEntrypoint(detection),
-	})
+	plan.InstallCmd = p.getNodeInstallCmd(pm)
+	plan.BuildCmd = p.getNodeBuildCmd(detection)
+	plan.StartCmd = p.getNodeStartCmd(detection)
+	plan.Stages = p.generateNodeStages(detection, pm)
 
 	return plan
 }
 
-func (p *Planner) getNodeDepsSteps(pm string) []Step {
-	lockFile := p.getLockFile(pm)
-	
-	steps := []Step{
-		{Type: "copy", Src: lockFile, Dest: "."},
-		{Type: "copy", Src: "package.json", Dest: "."},
+func (p *Planner) getNodeOutput(detection *analyzer.DetectionResult) string {
+	outputs := map[string]string{
+		"nextjs":    ".next",
+		"nuxt":      ".output",
+		"gatsby":    "public",
+		"astro":     "dist",
+		"vite":      "dist",
+		"nestjs":    "dist",
+		"remix":     "build",
+		"sveltekit": "build",
 	}
-
-	switch pm {
-	case "pnpm":
-		steps = append(steps, Step{Type: "run", Command: "corepack enable pnpm && pnpm install --frozen-lockfile"})
-	case "yarn":
-		steps = append(steps, Step{Type: "run", Command: "yarn install --frozen-lockfile"})
-	case "bun":
-		steps = append(steps, Step{Type: "run", Command: "bun install --frozen-lockfile"})
-	default:
-		steps = append(steps, Step{Type: "run", Command: "npm ci"})
+	if out, ok := outputs[detection.Framework]; ok {
+		return out
 	}
-
-	return steps
+	return "dist"
 }
 
-func (p *Planner) getNodeBuildStep(detection *analyzer.DetectionResult) *Step {
+func (p *Planner) getNodeCacheMounts(pm string) []CacheMount {
+	mounts := []CacheMount{
+		{Type: "cache", Target: "/root/.npm"},
+	}
+	switch pm {
+	case "pnpm":
+		mounts = append(mounts, CacheMount{Type: "cache", Target: "/root/.pnpm-store"})
+	case "yarn":
+		mounts = append(mounts, CacheMount{Type: "cache", Target: "/root/.yarn"})
+	case "bun":
+		mounts = append(mounts, CacheMount{Type: "cache", Target: "/root/.bun"})
+	}
+	return mounts
+}
+
+func (p *Planner) getNodeInstallCmd(pm string) string {
+	switch pm {
+	case "pnpm":
+		return "corepack enable pnpm && pnpm install --frozen-lockfile"
+	case "yarn":
+		return "yarn install --frozen-lockfile"
+	case "bun":
+		return "bun install --frozen-lockfile"
+	default:
+		return "npm ci"
+	}
+}
+
+func (p *Planner) getNodeBuildCmd(detection *analyzer.DetectionResult) string {
 	buildScripts := map[string]string{
-		"nextjs":  "next build",
-		"nuxt":    "nuxt build",
-		"gatsby":  "gatsby build",
-		"astro":   "astro build",
-		"vite":    "vite build",
-		"nestjs":  "nest build",
-		"remix":   "remix build",
+		"nextjs":    "next build",
+		"nuxt":      "nuxt build",
+		"gatsby":    "gatsby build",
+		"astro":     "astro build",
+		"vite":      "vite build",
+		"nestjs":    "nest build",
+		"remix":     "remix build",
 		"sveltekit": "vite build",
 	}
-
 	if script, ok := buildScripts[detection.Framework]; ok {
-		return &Step{
-			Type:    "run",
-			Command: script,
-		}
+		return script
+	}
+	return "npm run build"
+}
+
+func (p *Planner) getNodeStartCmd(detection *analyzer.DetectionResult) string {
+	startCmds := map[string]string{
+		"nextjs":    "next start",
+		"nuxt":      "node .output/server/index.mjs",
+		"vite":      "node dist/index.js",
+		"nestjs":    "node dist/main.js",
+		"express":   "node dist/index.js",
+		"remix":     "node build/server/index.js",
+	}
+	if cmd, ok := startCmds[detection.Framework]; ok {
+		return cmd
+	}
+	return "node index.js"
+}
+
+func (p *Planner) generateNodeStages(detection *analyzer.DetectionResult, pm string) []Stage {
+	baseImage := detection.Runtime
+	if baseImage == "" {
+		baseImage = "node:22-alpine"
 	}
 
-	// Generic: check package.json for build script
-	return &Step{
-		Type:    "run",
-		Command: "npm run build",
+	stages := []Stage{
+		{
+			Name:  "deps",
+			Image: baseImage,
+			Steps: []Step{
+				{Type: "workdir", Dest: "/app"},
+				{Type: "copy", Src: "package.json", Dest: "."},
+				{Type: "copy", Src: p.getLockFileName(pm), Dest: "."},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: p.getCacheDir(pm)}},
+				{Type: "run", Command: p.getNodeInstallCmd(pm)},
+			},
+		},
 	}
+
+	if !p.isStaticFramework(detection.Framework) {
+		stages = append(stages, Stage{
+			Name:  "build",
+			Image: baseImage,
+			Steps: []Step{
+				{Type: "workdir", Dest: "/app"},
+				{Type: "copy", Src: ".", Dest: "."},
+				{Type: "run", Command: p.getNodeBuildCmd(detection)},
+			},
+			Needs: []string{"deps"},
+		})
+	}
+
+	runtimeImage := p.getNodeRuntimeImage(detection)
+	stages = append(stages, Stage{
+		Name:       "runtime",
+		Image:      runtimeImage,
+		Entrypoint: p.getNodeEntrypoint(detection),
+		Steps:      p.getNodeRuntimeSteps(detection),
+	})
+
+	return stages
+}
+
+func (p *Planner) getNodeRuntimeImage(detection *analyzer.DetectionResult) string {
+	if p.isStaticFramework(detection.Framework) {
+		return "nginx:alpine"
+	}
+	return "node:22-alpine"
 }
 
 func (p *Planner) getNodeRuntimeSteps(detection *analyzer.DetectionResult) []Step {
 	steps := []Step{
-		{Type: "copy", Src: ".", Dest: "/app"},
+		{Type: "workdir", Dest: "/app"},
 	}
 
-	if detection.Framework == "nextjs" {
+	if p.isStaticFramework(detection.Framework) {
+		publishDir := p.getNodeOutput(detection)
 		steps = append(steps, Step{
-			Type:    "env",
-			Command: "NODE_ENV=production",
+			Type: "copy",
+			Src:  "build:" + publishDir,
+			Dest: "/usr/share/nginx/html",
+		})
+		steps = append(steps, Step{
+			Type: "copy",
+			Src:  "build:nginx.conf",
+			Dest: "/etc/nginx/conf.d/default.conf",
+		})
+	} else {
+		steps = append(steps, Step{
+			Type: "copy",
+			Src:  "build:.",
+			Dest: "/app",
 		})
 	}
 
@@ -226,38 +337,20 @@ func (p *Planner) getNodeEntrypoint(detection *analyzer.DetectionResult) []strin
 	entrypoints := map[string][]string{
 		"nextjs":    {"node", "server.js"},
 		"nuxt":      {"node", ".output/server/index.mjs"},
-		"gatsby":    {"node", "public/index.js"},
+		"gatsby":    {"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"},
+		"astro":     {"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"},
 		"vite":      {"node", "dist/index.js"},
 		"nestjs":    {"node", "dist/main.js"},
 		"express":   {"node", "dist/index.js"},
 		"sveltekit": {"node", "build/index.js"},
 	}
-
 	if ep, ok := entrypoints[detection.Framework]; ok {
 		return ep
 	}
-
 	return []string{"node", "index.js"}
 }
 
-func (p *Planner) getNodeRuntimeImage(detection *analyzer.DetectionResult) string {
-	runtimeImages := map[string]string{
-		"nextjs":  "node:22-alpine",
-		"nuxt":    "node:22-alpine",
-		"vite":    "node:22-alpine",
-		"nestjs":  "node:22-alpine",
-		"express": "node:22-alpine",
-		"gatsby":  "nginx:alpine", // static
-		"astro":   "nginx:alpine", // static
-	}
-
-	if img, ok := runtimeImages[detection.Framework]; ok {
-		return img
-	}
-	return "node:22-alpine"
-}
-
-func (p *Planner) getLockFile(pm string) string {
+func (p *Planner) getLockFileName(pm string) string {
 	lockFiles := map[string]string{
 		"pnpm": "pnpm-lock.yaml",
 		"yarn": "yarn.lock",
@@ -270,6 +363,19 @@ func (p *Planner) getLockFile(pm string) string {
 	return "package-lock.json"
 }
 
+func (p *Planner) getCacheDir(pm string) string {
+	cacheDirs := map[string]string{
+		"pnpm": "/root/.pnpm-store",
+		"yarn": "/root/.yarn",
+		"bun":  "/root/.bun",
+		"npm":  "/root/.npm",
+	}
+	if dir, ok := cacheDirs[pm]; ok {
+		return dir
+	}
+	return "/root/.npm"
+}
+
 func (p *Planner) isStaticFramework(framework string) bool {
 	staticFrameworks := map[string]bool{
 		"gatsby": true,
@@ -278,113 +384,144 @@ func (p *Planner) isStaticFramework(framework string) bool {
 	return staticFrameworks[framework]
 }
 
-func (p *Planner) planPython(detection *analyzer.DetectionResult) *BuildPlan {
-	pythonVersion := "3.12"
+// ============ PYTHON ============
 
+func (p *Planner) planPython(detection *analyzer.DetectionResult) *BuildPlan {
 	plan := &BuildPlan{
-		Output:  "./app",
-		Runtime: "python:" + pythonVersion + "-alpine",
-		CacheConfig: CacheConfig{
-			Keys: map[string]string{
-				"pip": "/root/.cache/pip",
-			},
+		Output:       "./app",
+		BuildPack:    "launchpack",
+		StaticDeploy: false,
+		Cache: &CacheConfig{
 			Mounts: []CacheMount{
 				{Type: "cache", Target: "/root/.cache/pip"},
 				{Type: "cache", Target: "/root/.local"},
 			},
 		},
 		Strategy: "buildpack_python",
-		Metadata: PlanMetadata{
+		Environment: map[string]string{
+			"PYTHONUNBUFFERED": "1",
+		},
+		Metadata: &PlanMetadata{
 			EstimatedBuildTimeMs: 45000,
+			CacheHitRate:        0.80,
+			ImageSizeEstimateMB: 10,
 			OptimizationApplied: []string{"multi-stage", "layer-caching", "pip-cache"},
 		},
 	}
 
-	plan.Stages = []Stage{
-		{
-			Name:  "deps",
-			Image: "python:" + pythonVersion + "-slim",
-			Steps: p.getPythonDepsSteps(detection),
-			Cache: []string{"/root/.cache/pip", "/root/.local"},
-		},
-		{
-			Name:  "build",
-			Image: "python:" + pythonVersion + "-slim",
-			Steps: p.getPythonBuildSteps(detection),
-			Needs: []string{"deps"},
-		},
-		{
-			Name:       "runtime",
-			Image:      "python:" + pythonVersion + "-alpine",
-			Steps:      []Step{{Type: "copy", Src: ".", Dest: "/app"}},
-			Entrypoint: p.getPythonEntrypoint(detection),
-		},
-	}
+	plan.InstallCmd = p.getPythonInstallCmd()
+	plan.BuildCmd = ""
+	plan.StartCmd = p.getPythonStartCmd(detection)
+	plan.Stages = p.generatePythonStages(detection)
 
 	return plan
 }
 
-func (p *Planner) getPythonDepsSteps(detection *analyzer.DetectionResult) []Step {
-	steps := []Step{
-		{Type: "workdir", Dest: "/app"},
+func (p *Planner) getPythonInstallCmd() string {
+	if p.hasFile("pyproject.toml") {
+		return "pip install uv && uv pip install --system -r requirements.txt"
 	}
-
-	if _, err := os.Stat("pyproject.toml"); err == nil {
-		steps = append(steps, Step{Type: "copy", Src: "pyproject.toml", Dest: "."})
-		steps = append(steps, Step{Type: "run", Command: "pip install uv && uv pip install --system -r requirements.txt"})
-	} else if _, err := os.Stat("requirements.txt"); err == nil {
-		steps = append(steps, Step{Type: "copy", Src: "requirements.txt", Dest: "."})
-		steps = append(steps, Step{Type: "run", Command: "pip install --no-cache-dir -r requirements.txt"})
-	} else if _, err := os.Stat("Pipfile"); err == nil {
-		steps = append(steps, Step{Type: "copy", Src: "Pipfile*", Dest: "."})
-		steps = append(steps, Step{Type: "run", Command: "pip install pipenv && pipenv install --system --deploy"})
+	if p.hasFile("requirements.txt") {
+		return "pip install --no-cache-dir -r requirements.txt"
 	}
-
-	return steps
+	if p.hasFile("Pipfile") {
+		return "pip install pipenv && pipenv install --system --deploy"
+	}
+	return "echo 'No dependency file found'"
 }
 
-func (p *Planner) getPythonBuildSteps(detection *analyzer.DetectionResult) []Step {
-	return []Step{
-		{Type: "workdir", Dest: "/app"},
-		{Type: "copy", Src: ".", Dest: "/app"},
+func (p *Planner) getPythonStartCmd(detection *analyzer.DetectionResult) string {
+	startCmds := map[string][]string{
+		"fastapi": {"uvicorn", "main:app", "--host", "0.0.0.0", "--port", "{{PORT}}"},
+		"django":  {"gunicorn", "--bind", ":{{PORT}}", "config.wsgi:application"},
+		"flask":   {"flask", "run", "--host=0.0.0.0", "--port={{PORT}}"},
 	}
+	if cmd, ok := startCmds[detection.Framework]; ok {
+		return strings.Join(cmd, " ")
+	}
+	return "python main.py"
 }
 
-func (p *Planner) getPythonEntrypoint(detection *analyzer.DetectionResult) []string {
-	entrypoints := map[string][]string{
-		"fastapi": {"uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"},
-		"django":  {"gunicorn", "--bind", ":8080", "config.wsgi:application"},
-		"flask":   {"flask", "run", "--host=0.0.0.0"},
+func (p *Planner) generatePythonStages(detection *analyzer.DetectionResult) []Stage {
+	baseImage := "python:3.12-slim"
+
+	stages := []Stage{
+		{
+			Name:  "deps",
+			Image: baseImage,
+			Steps: []Step{
+				{Type: "workdir", Dest: "/app"},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: "/root/.cache/pip"}},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: "/root/.local"}},
+			},
+		},
 	}
 
-	if ep, ok := entrypoints[detection.Framework]; ok {
-		return ep
+	if p.hasFile("requirements.txt") {
+		stages[0].Steps = append(stages[0].Steps,
+			Step{Type: "copy", Src: "requirements.txt", Dest: "."},
+		)
 	}
 
-	return []string{"python", "main.py"}
+	stages = append(stages, Stage{
+		Name:  "build",
+		Image: baseImage,
+		Steps: []Step{
+			{Type: "workdir", Dest: "/app"},
+			{Type: "copy", Src: ".", Dest: "."},
+		},
+		Needs: []string{"deps"},
+	})
+
+	stages = append(stages, Stage{
+		Name:    "runtime",
+		Image:   "python:3.12-alpine",
+		Command: p.getPythonStartCmd(detection),
+		Steps: []Step{
+			{Type: "workdir", Dest: "/app"},
+			{Type: "copy", Src: "build:.", Dest: "/app"},
+			{Type: "run", Command: "adduser -D -u 1001 -s /bin/sh appuser && chown -R appuser /app"},
+		},
+	})
+
+	return stages
 }
+
+// ============ GO ============
 
 func (p *Planner) planGo(detection *analyzer.DetectionResult) *BuildPlan {
 	plan := &BuildPlan{
-		Output:  "./bin",
-		Runtime: "alpine",
-		CacheConfig: CacheConfig{
-			Keys: map[string]string{
-				"go": "/go/pkg/mod",
-			},
+		Output:       "./bin",
+		BuildPack:    "launchpack",
+		StaticDeploy: false,
+		Cache: &CacheConfig{
 			Mounts: []CacheMount{
 				{Type: "cache", Target: "/go/pkg/mod"},
 				{Type: "cache", Target: "/root/.cache/go-build"},
 			},
 		},
 		Strategy: "buildpack_go",
-		Metadata: PlanMetadata{
+		Environment: map[string]string{
+			"CGO_ENABLED": "0",
+		},
+		Metadata: &PlanMetadata{
 			EstimatedBuildTimeMs: 60000,
-			OptimizationApplied: []string{"multi-stage", "go-build-cache"},
+			CacheHitRate:        0.90,
+			ImageSizeEstimateMB: 8,
+			OptimizationApplied: []string{"multi-stage", "go-build-cache", "static-binary"},
 		},
 	}
 
-	plan.Stages = []Stage{
+	plan.InstallCmd = "go mod download"
+	plan.BuildCmd = "CGO_ENABLED=0 go build -ldflags='-s -w' -o main ."
+	plan.StartCmd = "/app/main"
+	plan.Stages = p.generateGoStages()
+
+	return plan
+}
+
+func (p *Planner) generateGoStages() []Stage {
+	return []Stage{
 		{
 			Name:  "builder",
 			Image: "golang:1.22-alpine",
@@ -392,44 +529,57 @@ func (p *Planner) planGo(detection *analyzer.DetectionResult) *BuildPlan {
 				{Type: "workdir", Dest: "/build"},
 				{Type: "copy", Src: "go.mod", Dest: "."},
 				{Type: "copy", Src: "go.sum", Dest: "."},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: "/go/pkg/mod"}},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: "/root/.cache/go-build"}},
 				{Type: "run", Command: "go mod download"},
 				{Type: "copy", Src: ".", Dest: "."},
 				{Type: "run", Command: "CGO_ENABLED=0 go build -ldflags='-s -w' -o main ."},
 			},
-			Cache: []string{"/go/pkg/mod", "/root/.cache/go-build"},
 		},
 		{
-			Name:       "runtime",
-			Image:      "alpine:3.19",
-			Steps:      []Step{{Type: "copy", Src: "bin/main", Dest: "/app/main"}},
-			Entrypoint: []string{"/app/main"},
+			Name:  "runtime",
+			Image: "alpine:3.19",
+			Steps: []Step{
+				{Type: "workdir", Dest: "/app"},
+				{Type: "copy", Src: "builder:build/main", Dest: "/app/main"},
+				{Type: "run", Command: "adduser -D -u 1001 -s /bin/sh appuser && chown -R appuser /app"},
+			},
+			Command: "/app/main",
 		},
 	}
-
-	return plan
 }
+
+// ============ RUST ============
 
 func (p *Planner) planRust(detection *analyzer.DetectionResult) *BuildPlan {
 	plan := &BuildPlan{
-		Output:  "./target/release",
-		Runtime: "scratch",
-		CacheConfig: CacheConfig{
-			Keys: map[string]string{
-				"cargo": "/usr/local/cargo/registry",
-			},
+		Output:       "./target/release",
+		BuildPack:    "launchpack",
+		StaticDeploy: false,
+		Cache: &CacheConfig{
 			Mounts: []CacheMount{
 				{Type: "cache", Target: "/usr/local/cargo/registry"},
 				{Type: "cache", Target: "/app/target"},
 			},
 		},
 		Strategy: "buildpack_rust",
-		Metadata: PlanMetadata{
+		Metadata: &PlanMetadata{
 			EstimatedBuildTimeMs: 120000,
-			OptimizationApplied: []string{"multi-stage", "cargo-cache"},
+			CacheHitRate:        0.85,
+			ImageSizeEstimateMB: 5,
+			OptimizationApplied: []string{"multi-stage", "cargo-cache", "static-binary"},
 		},
 	}
 
-	plan.Stages = []Stage{
+	plan.BuildCmd = "cargo build --release"
+	plan.StartCmd = "/app/app"
+	plan.Stages = p.generateRustStages()
+
+	return plan
+}
+
+func (p *Planner) generateRustStages() []Stage {
+	return []Stage{
 		{
 			Name:  "builder",
 			Image: "rust:1.77-alpine",
@@ -437,74 +587,89 @@ func (p *Planner) planRust(detection *analyzer.DetectionResult) *BuildPlan {
 				{Type: "workdir", Dest: "/app"},
 				{Type: "copy", Src: "Cargo.toml", Dest: "."},
 				{Type: "copy", Src: "Cargo.lock", Dest: "."},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: "/usr/local/cargo/registry"}},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: "/app/target"}},
 				{Type: "run", Command: "cargo build --release"},
 			},
-			Cache: []string{"/usr/local/cargo/registry", "/app/target"},
 		},
 		{
-			Name:       "runtime",
-			Image:      "scratch",
-			Steps:      []Step{{Type: "copy", Src: "target/release/app", Dest: "/app"}},
-			Entrypoint: []string{"/app"},
+			Name:  "runtime",
+			Image: "scratch",
+			Steps: []Step{
+				{Type: "copy", Src: "builder:app/target/release/app", Dest: "/app"},
+			},
+			Command: "/app",
 		},
 	}
-
-	return plan
 }
 
-func (p *Planner) planPHP(detection *analyzer.DetectionResult) *BuildPlan {
-	runtime := "php:8.3-fpm-alpine"
-	if detection.Framework == "laravel" {
-		runtime = "php:8.3-fpm-alpine"
-	}
+// ============ PHP ============
 
+func (p *Planner) planPHP(detection *analyzer.DetectionResult) *BuildPlan {
 	plan := &BuildPlan{
-		Output:  "./public",
-		Runtime: runtime,
-		CacheConfig: CacheConfig{
-			Keys: map[string]string{
-				"composer": "/root/.composer",
-			},
+		Output:       "./public",
+		BuildPack:    "launchpack",
+		StaticDeploy: false,
+		Cache: &CacheConfig{
 			Mounts: []CacheMount{
 				{Type: "cache", Target: "/root/.composer"},
 			},
 		},
 		Strategy: "buildpack_php",
-		Metadata: PlanMetadata{
+		Metadata: &PlanMetadata{
 			EstimatedBuildTimeMs: 30000,
+			CacheHitRate:        0.80,
+			ImageSizeEstimateMB: 8,
 			OptimizationApplied: []string{"multi-stage", "composer-cache"},
 		},
 	}
 
-	plan.Stages = []Stage{
-		{
-			Name:  "deps",
-			Image: "composer:2",
-			Steps: []Step{
-				{Type: "copy", Src: "composer.json", Dest: "/app"},
-				{Type: "copy", Src: "composer.lock", Dest: "/app"},
-				{Type: "run", Command: "composer install --no-dev --optimize-autoloader"},
-			},
-			Cache: []string{"/root/.composer"},
-		},
-		{
-			Name:  "build",
-			Image: runtime,
-			Steps: []Step{
-				{Type: "copy", Src: ".", Dest: "/var/www/html"},
-			},
-			Needs: []string{"deps"},
-		},
-	}
+	plan.InstallCmd = "composer install --no-dev --optimize-autoloader"
+	plan.StartCmd = p.getPHPStartCmd(detection)
+	plan.Stages = p.generatePHPStages(detection)
 
 	return plan
 }
 
+func (p *Planner) getPHPStartCmd(detection *analyzer.DetectionResult) string {
+	if detection.Framework == "laravel" {
+		return "php artisan serve --host=0.0.0.0 --port={{PORT}}"
+	}
+	return "php -S 0.0.0.0:{{PORT}}"
+}
+
+func (p *Planner) generatePHPStages(detection *analyzer.DetectionResult) []Stage {
+	return []Stage{
+		{
+			Name:  "deps",
+			Image: "composer:2",
+			Steps: []Step{
+				{Type: "workdir", Dest: "/app"},
+				{Type: "copy", Src: "composer.json", Dest: "."},
+				{Type: "copy", Src: "composer.lock", Dest: "."},
+				{Type: "mount", Mount: &CacheMount{Type: "cache", Target: "/root/.composer"}},
+				{Type: "run", Command: "composer install --no-dev --optimize-autoloader"},
+			},
+		},
+		{
+			Name:  "runtime",
+			Image: "php:8.3-fpm-alpine",
+			Steps: []Step{
+				{Type: "workdir", Dest: "/var/www/html"},
+				{Type: "copy", Src: "build:.", Dest: "/var/www/html"},
+				{Type: "run", Command: "adduser -D -u 1001 -s /bin/sh www-data && chown -R www-data /var/www/html"},
+			},
+			Command: p.getPHPStartCmd(detection),
+		},
+	}
+}
+
+// ============ GENERIC ============
+
 func (p *Planner) planDockerfile(detection *analyzer.DetectionResult) *BuildPlan {
 	return &BuildPlan{
 		Strategy: "dockerfile_user_supplied",
-		Metadata: PlanMetadata{
-			EstimatedBuildTimeMs: 0,
+		Metadata: &PlanMetadata{
 			OptimizationApplied: []string{"user-supplied"},
 		},
 	}
@@ -512,11 +677,14 @@ func (p *Planner) planDockerfile(detection *analyzer.DetectionResult) *BuildPlan
 
 func (p *Planner) planGeneric(detection *analyzer.DetectionResult) *BuildPlan {
 	return &BuildPlan{
-		Output:  ".",
-		Runtime: "alpine:latest",
-		Strategy: "buildpack_generic",
-		Metadata: PlanMetadata{
+		Output:       ".",
+		BuildPack:    "launchpack",
+		StaticDeploy: false,
+		Strategy:     "buildpack_generic",
+		Metadata: &PlanMetadata{
 			EstimatedBuildTimeMs: 30000,
+			CacheHitRate:        0.50,
+			ImageSizeEstimateMB: 20,
 			OptimizationApplied: []string{"generic-build"},
 		},
 		Stages: []Stage{
@@ -524,10 +692,17 @@ func (p *Planner) planGeneric(detection *analyzer.DetectionResult) *BuildPlan {
 				Name:  "build",
 				Image: "alpine:latest",
 				Steps: []Step{
+					{Type: "workdir", Dest: "/app"},
 					{Type: "copy", Src: ".", Dest: "/app"},
-					{Type: "run", Command: "echo 'No build steps detected'"},
 				},
 			},
 		},
 	}
+}
+
+// Helper functions
+
+func (p *Planner) hasFile(filename string) bool {
+	_, err := os.Stat(filename)
+	return err == nil
 }
