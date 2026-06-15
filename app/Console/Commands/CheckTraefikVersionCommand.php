@@ -13,18 +13,9 @@ class CheckTraefikVersionCommand extends Command
 
     public function handle(): int
     {
-        $this->info('Checking Traefik versions on all servers...');
+        // Traefik version check is disabled for standalone mode
+        $this->warn('Traefik version checking is disabled in standalone mode.');
 
-        try {
-            CheckTraefikVersionJob::dispatch();
-            $this->info('Traefik version check job dispatched successfully.');
-            $this->info('Notifications will be sent to teams with outdated Traefik versions.');
-
-            return Command::SUCCESS;
-        } catch (\Exception $e) {
-            $this->error('Failed to dispatch Traefik version check job: '.$e->getMessage());
-
-            return Command::FAILURE;
-        }
+        return Command::SUCCESS;
     }
 }

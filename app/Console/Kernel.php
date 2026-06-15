@@ -68,23 +68,22 @@ class Kernel extends ConsoleKernel
             $this->scheduleInstance->command('horizon:snapshot')->everyFiveMinutes();
             $this->scheduleInstance->command('cleanup:unreachable-servers')->daily()->onOneServer();
 
-            $this->scheduleInstance->job(new PullTemplatesFromCDN)->cron($this->updateCheckFrequency)->timezone($this->instanceTimezone)->onOneServer();
-            $this->scheduleInstance->job(new PullChangelog)->cron($this->updateCheckFrequency)->timezone($this->instanceTimezone)->onOneServer();
+            // Update-related scheduled jobs are disabled for standalone mode
+            // $this->scheduleInstance->job(new PullTemplatesFromCDN)->cron($this->updateCheckFrequency)->timezone($this->instanceTimezone)->onOneServer();
+            // $this->scheduleInstance->job(new PullChangelog)->cron($this->updateCheckFrequency)->timezone($this->instanceTimezone)->onOneServer();
+            // $this->scheduleUpdates();
+            // $this->pullImages();
+            // $this->scheduleInstance->job(new CheckTraefikVersionJob)->weekly()->sundays()->at('00:00')->timezone($this->instanceTimezone)->onOneServer();
 
             $this->scheduleInstance->job(new CleanupInstanceStuffsJob)->everyTwoMinutes()->onOneServer();
-            $this->scheduleUpdates();
 
             // Server Jobs
             $this->scheduleInstance->job(new ServerManagerJob)->everyMinute()->onOneServer();
-
-            $this->pullImages();
 
             // Scheduled Jobs (Backups & Tasks)
             $this->scheduleInstance->job(new ScheduledJobManager)->everyMinute()->onOneServer();
 
             $this->scheduleInstance->job(new RegenerateSslCertJob)->twiceDaily()->onOneServer();
-
-            $this->scheduleInstance->job(new CheckTraefikVersionJob)->weekly()->sundays()->at('00:00')->timezone($this->instanceTimezone)->onOneServer();
 
             $this->scheduleInstance->command('cleanup:database --yes')->daily();
             $this->scheduleInstance->command('uploads:clear')->everyTwoMinutes();
@@ -96,26 +95,28 @@ class Kernel extends ConsoleKernel
 
     private function pullImages(): void
     {
-        $this->scheduleInstance->job(new CheckHelperImageJob)
-            ->cron($this->updateCheckFrequency)
-            ->timezone($this->instanceTimezone)
-            ->onOneServer();
+        // Disabled for standalone mode - no external version checks
+        // $this->scheduleInstance->job(new CheckHelperImageJob)
+        //     ->cron($this->updateCheckFrequency)
+        //     ->timezone($this->instanceTimezone)
+        //     ->onOneServer();
     }
 
     private function scheduleUpdates(): void
     {
-        $this->scheduleInstance->job(new CheckForUpdatesJob)
-            ->cron($this->updateCheckFrequency)
-            ->timezone($this->instanceTimezone)
-            ->onOneServer();
+        // Disabled for standalone mode - no external version checks or auto-updates
+        // $this->scheduleInstance->job(new CheckForUpdatesJob)
+        //     ->cron($this->updateCheckFrequency)
+        //     ->timezone($this->instanceTimezone)
+        //     ->onOneServer();
 
-        if ($this->settings->is_auto_update_enabled) {
-            $autoUpdateFrequency = $this->settings->auto_update_frequency;
-            $this->scheduleInstance->job(new UpdateCoolifyJob)
-                ->cron($autoUpdateFrequency)
-                ->timezone($this->instanceTimezone)
-                ->onOneServer();
-        }
+        // if ($this->settings->is_auto_update_enabled) {
+        //     $autoUpdateFrequency = $this->settings->auto_update_frequency;
+        //     $this->scheduleInstance->job(new UpdateCoolifyJob)
+        //         ->cron($autoUpdateFrequency)
+        //         ->timezone($this->instanceTimezone)
+        //         ->onOneServer();
+        // }
     }
 
     protected function commands(): void

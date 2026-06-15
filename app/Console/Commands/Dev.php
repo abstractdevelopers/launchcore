@@ -86,6 +86,6 @@ class Dev extends Command
             echo "   ERROR  Could not clean up stuck database backup executions: {$e->getMessage()}\n";
         }
 
-        CheckHelperImageJob::dispatch();
+        // CheckHelperImageJob::dispatch(); // Disabled for standalone mode
     }
 }

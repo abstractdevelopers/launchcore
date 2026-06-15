@@ -91,14 +91,8 @@ class Updates extends Component
 
     public function checkManually()
     {
-        CheckForUpdatesJob::dispatchSync();
-        $this->dispatch('updateAvailable');
-        $settings = instanceSettings();
-        if ($settings->new_version_available) {
-            $this->dispatch('success', 'New version available!');
-        } else {
-            $this->dispatch('success', 'No new version available.');
-        }
+        // Update checks are disabled in standalone mode
+        $this->dispatch('info', 'Update checking is disabled in standalone mode.');
     }
 
     public function render()

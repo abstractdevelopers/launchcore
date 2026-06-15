@@ -19,28 +19,8 @@ class CheckTraefikVersionJob implements ShouldBeEncrypted, ShouldQueue
 
     public function handle(): void
     {
-        // Load versions from cached data
-        $traefikVersions = get_traefik_versions();
-
-        if (empty($traefikVersions)) {
-            return;
-        }
-
-        // Query all servers with Traefik proxy that are reachable
-        $servers = Server::whereNotNull('proxy')
-            ->whereProxyType(ProxyTypes::TRAEFIK->value)
-            ->whereRelation('settings', 'is_reachable', true)
-            ->whereRelation('settings', 'is_usable', true)
-            ->get();
-
-        if ($servers->isEmpty()) {
-            return;
-        }
-
-        // Dispatch individual server check jobs in parallel
-        // Each job will send immediate notifications when outdated Traefik is detected
-        foreach ($servers as $server) {
-            CheckTraefikVersionForServerJob::dispatch($server, $traefikVersions);
-        }
+        // Traefik version check is disabled - platform is running in standalone mode
+        // No external version checks are performed
+        return;
     }
 }

@@ -52,16 +52,8 @@ class SettingsDropdown extends Component
 
     public function manualFetchChangelog()
     {
-        if (! isDev()) {
-            return;
-        }
-
-        try {
-            PullChangelog::dispatch();
-            $this->dispatch('success', 'Changelog fetch initiated! Check back in a few moments.');
-        } catch (\Throwable $e) {
-            $this->dispatch('error', 'Failed to fetch changelog: '.$e->getMessage());
-        }
+        // Changelog fetching is disabled in standalone mode
+        $this->dispatch('info', 'Changelog fetching is disabled in standalone mode.');
     }
 
     public function render()

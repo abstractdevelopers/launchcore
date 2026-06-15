@@ -25,30 +25,8 @@ class UpdateCoolifyJob implements ShouldBeEncrypted, ShouldQueue
 
     public function handle(): void
     {
-        try {
-            CheckForUpdatesJob::dispatchSync();
-            $settings = instanceSettings();
-            if (! $settings->new_version_available) {
-                Log::info('No new version available. Skipping update.');
-
-                return;
-            }
-
-            $server = Server::findOrFail(0);
-            if (! $server) {
-                Log::error('Server not found. Cannot proceed with update.');
-
-                return;
-            }
-
-            Log::info('Starting Coolify update process...');
-            UpdateCoolify::run(false); // false means it's not a manual update
-
-            $settings->update(['new_version_available' => false]);
-            Log::info('Coolify update completed successfully.');
-        } catch (\Throwable $e) {
-            Log::error('UpdateCoolifyJob failed: '.$e->getMessage());
-            // Consider implementing a notification to administrators
-        }
+        // Auto-update is disabled - platform is running in standalone mode
+        // No external HTTP calls or automatic updates are performed
+        return;
     }
 }

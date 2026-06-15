@@ -26,38 +26,9 @@ class PullChangelog implements ShouldBeEncrypted, ShouldQueue
 
     public function handle(): void
     {
-        try {
-            // Fetch from CDN instead of GitHub API to avoid rate limits
-            $cdnUrl = config('constants.coolify.releases_url');
-
-            $response = Http::retry(3, 1000)
-                ->timeout(30)
-                ->get($cdnUrl);
-
-            if ($response->successful()) {
-                $releases = $response->json();
-
-                // Limit to 10 releases for processing (same as before)
-                $releases = array_slice($releases, 0, 10);
-
-                $changelog = $this->transformReleasesToChangelog($releases);
-
-                // Group entries by month and save them
-                $this->saveChangelogEntries($changelog);
-            } else {
-                // Log error instead of sending notification
-                Log::error('PullChangelogFromGitHub: Failed to fetch from CDN', [
-                    'status' => $response->status(),
-                    'url' => $cdnUrl,
-                ]);
-            }
-        } catch (\Throwable $e) {
-            // Log error instead of sending notification
-            Log::error('PullChangelogFromGitHub: Exception occurred', [
-                'message' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-        }
+        // Changelog pulling from CDN/GitHub is disabled - platform is running in standalone mode
+        // No external HTTP calls are made
+        return;
     }
 
     private function transformReleasesToChangelog(array $releases): array

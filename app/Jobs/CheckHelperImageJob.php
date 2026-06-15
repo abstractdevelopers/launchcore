@@ -20,20 +20,8 @@ class CheckHelperImageJob implements ShouldBeEncrypted, ShouldQueue
 
     public function handle(): void
     {
-        try {
-            $response = Http::retry(3, 1000)->get(config('constants.coolify.versions_url'));
-            if ($response->successful()) {
-                $versions = $response->json();
-                $settings = instanceSettings();
-                $latest_version = data_get($versions, 'coolify.helper.version');
-                $current_version = $settings->helper_version;
-                if (version_compare($latest_version, $current_version, '>')) {
-                    $settings->update(['helper_version' => $latest_version]);
-                }
-            }
-        } catch (\Throwable $e) {
-            send_internal_notification('CheckHelperImageJob failed with: '.$e->getMessage());
-            throw $e;
-        }
+        // Helper image version check is disabled - platform is running in standalone mode
+        // No external HTTP calls are made
+        return;
     }
 }

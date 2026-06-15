@@ -36,23 +36,24 @@ class Init extends Command
         Artisan::call('optimize:clear');
         Artisan::call('optimize');
 
-        try {
-            $this->pullTemplatesFromCDN();
-        } catch (\Throwable $e) {
-            echo "Could not pull templates from CDN: {$e->getMessage()}\n";
-        }
+        // Upstream fetching disabled for standalone mode
+        // try {
+        //     $this->pullTemplatesFromCDN();
+        // } catch (\Throwable $e) {
+        //     echo "Could not pull templates from CDN: {$e->getMessage()}\n";
+        // }
 
-        try {
-            $this->pullChangelogFromGitHub();
-        } catch (\Throwable $e) {
-            echo "Could not changelogs from github: {$e->getMessage()}\n";
-        }
+        // try {
+        //     $this->pullChangelogFromGitHub();
+        // } catch (\Throwable $e) {
+        //     echo "Could not changelogs from github: {$e->getMessage()}\n";
+        // }
 
-        try {
-            $this->pullHelperImage();
-        } catch (\Throwable $e) {
-            echo "Error in pullHelperImage command: {$e->getMessage()}\n";
-        }
+        // try {
+        //     $this->pullHelperImage();
+        // } catch (\Throwable $e) {
+        //     echo "Error in pullHelperImage command: {$e->getMessage()}\n";
+        // }
 
         if (isCloud()) {
             return;
